@@ -1,0 +1,371 @@
+---
+title: "Figure markdown"
+author: "Laurent"
+date: "2023-04-11"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+packages <- c("readxl", "lme4", "nlme","gridExtra","grid", "car","ggpmisc","flextable","officer","caret", "ROCit", "dplyr","RColorBrewer","ggrepel" ,"ggbeeswarm","ggthemes","Cairo", "corrplot","Hmisc","ggplot2","pROC", "aod", "tidyr", "ggcorrplot","pheatmap", "gridExtra", "effsize","gplots","writexl","corrr","segmented")
+install.packages(setdiff(packages, rownames(installed.packages())))  
+
+library(readxl)
+library(lme4)
+library(nlme)
+library(car)
+library(dplyr)
+library(corrplot)
+library(Hmisc)
+library(ggplot2)
+library(pROC)
+library(aod)
+library(tidyr)
+library(ggcorrplot)
+library(gridExtra)
+library(effsize)
+library(writexl)
+library(corrr)
+library(segmented)
+library(gplots)
+library(pheatmap)
+library(ggthemes)
+library(RColorBrewer)
+library(Cairo)
+library(ggrepel)
+library(ggbeeswarm)
+library(caret)
+library(ROCit)
+library(flextable)
+library(officer)
+library(ggpmisc)
+library(gridExtra)
+library(grid)
+
+All_value_initial <- read_excel("Publication_data_galectin9_MTO.xlsx")
+Variable_names <- read_excel("Variable names.xlsx")
+### convert to factor
+All_value_initial$Phase <- factor(All_value_initial$Phase, c("Uninfected", "Acute phase", "Chronic phase", "End stage"))
+
+# Load them from Koundy's work https://github.com/koundy/ggplot_theme_Publication/tree/16454315a47c903b38ab176a820950f6e67ed81a
+
+theme_Publication <- function(base_size=14, base_family="sans") {
+  library(grid)
+  library(ggthemes)
+  (theme_foundation(base_size=base_size, base_family=base_family)
+    + theme(plot.title = element_text(face = "bold",
+                                      size = rel(1.2), hjust = 0.5),
+            text = element_text(),
+            panel.background = element_rect(colour = NA),
+            plot.background = element_rect(colour = NA),
+            panel.border = element_rect(colour = NA),
+            axis.title = element_text(face = "bold",size = rel(1)),
+            axis.title.y = element_text(angle=90,vjust =2),
+            axis.title.x = element_text(vjust = -0.2),
+            axis.text = element_text(), 
+            axis.line.x = element_line(colour="black"),
+            axis.line.y = element_line(colour="black"),
+            axis.ticks = element_line(),
+            #panel.grid.major = element_line(colour="#f0f0f0"),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            legend.key = element_rect(colour = NA),
+            #legend.position = "bottom",
+            #legend.direction = "horizontal",
+            legend.key.size= unit(0.2, "cm"),
+            #legend.margin = unit(0, "cm"),
+            legend.spacing = unit(0, "cm"),
+            legend.title = element_text(face="italic"),
+            plot.margin=unit(c(10,5,5,5),"mm"),
+            strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+            strip.text = element_text(face="bold")
+    ))
+  
+}
+
+scale_fill_Publication <- function(...){
+  library(scales)
+  discrete_scale("fill","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+  
+}
+
+```
+
+## Build the databases
+
+To limit the impact of missing values at each monocyte tunrover (MTO) time point, the average value of each parameter is calculated within a 15-day window of said MTO. This create a binned version of the database
+```{r Databases building}
+###average all the value within one week of an MTO time point
+bin_data_around_MTO <- function(database, time_frame = 7, fixed_elements = c("DPI","DTD", "Age_at_infection_y", "WPI", "number_of_draw_last_20_days")) {
+  
+  # Get list of numeric columns
+  numeric_cols <- names(database)[sapply(database, is.numeric)]
+  
+  # Identify columns to be binned
+  bin_cols <- setdiff(numeric_cols, fixed_elements)
+  
+  # For each animal
+  for (mmu in unique(database$MMU_ID)) {
+    
+    # Subset data for current animal
+    temp_df_mmu <- database %>% filter(MMU_ID == mmu)
+    
+    # Get DPI values for MTO time points
+    MTO_DPI_list <- temp_df_mmu$DPI[!is.na(temp_df_mmu$MTO)]
+    
+    # For each MTO time point
+    for (dpi in MTO_DPI_list) {
+      
+      # Subset data within time frame around MTO time point
+      subset_data <- temp_df_mmu %>%
+        filter(DPI >= dpi - time_frame & DPI <= dpi + time_frame)
+      
+      # For each column to be binned
+      for (col in bin_cols) {
+        
+        # Calculate mean of subset, ignoring NA values
+        mean_val <- mean(subset_data[[col]], na.rm = TRUE)
+        
+        # Replace values within time frame with mean, if not NA
+        database[[col]][which(database$DPI == dpi & database$MMU_ID == mmu)] <- ifelse(!is.na(mean_val), mean_val, NA)
+      }
+    }
+  }
+  
+  # Remove rows without MTO value
+  database <- database[!is.na(database$MTO),]
+  
+  # Remove empty columns
+  empty_cols <- sapply(database, function(x) all(is.na(x)))
+  database <- database[, !empty_cols]
+  
+  # Recalculate log10PVL altered by the mean
+  database$Log10PVL = log10(database$PVL)
+  return(database)
+}
+All_value_bin <- bin_data_around_MTO(All_value_initial, time_frame = 7, fixed_elements = c("DPI", "Age_at_infection_y", "WPI", "number_of_draw_last_20_days"))
+```
+
+## Making of figure 1
+
+Figure 1a
+```{r Figure 1a}
+Variable_names <- read_excel("Volcano_plot_label.xlsx")
+
+### DPI_min is a value of the minimum day post infection to take in account. If FALSE, all time points are used
+Figure_1a_correlation_database <- function(database, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y")) {
+  ### Filter database
+  if (DPI_min != FALSE) {
+    database = database %>% filter(DPI >= DPI_min)
+  }
+  database = database %>% filter(AIDS_related_Nx %in% Filter_on_AIDS_related_Nx)
+  database = select_if(database, is.numeric)
+  
+  # remove column Days to death since it requier knowledge fo the future
+  database$DTD = NULL
+  
+  ### Calculate Spearman correlation
+  mydata.rcorr = rcorr(as.matrix(database), type="spearman")
+  
+  # Colect MTO column number
+  MTO_column_number = grep("MTO", row.names(mydata.rcorr$P))[1]
+  
+  # get number of tests
+  nb_of_tests = length(database)
+  
+  # Build database with variable names, Spearman P and Spearman r for the correlation of the variable with MTO
+  correlation_computed_for_volcano <- data.frame(names=row.names(mydata.rcorr$P)[-MTO_column_number],
+                                                 MTO_P = mydata.rcorr$P[,MTO_column_number][-MTO_column_number],
+                                                 MTO_r = mydata.rcorr$r[,MTO_column_number][-MTO_column_number])
+  
+  # apply bonferonni correction ot p value
+  correlation_computed_for_volcano$MTO_P_bonferroni = correlation_computed_for_volcano$MTO_P * nb_of_tests
+  
+  # change 0 p value to 0.000000000001 
+  correlation_computed_for_volcano$MTO_P_bonferroni[correlation_computed_for_volcano$MTO_P_bonferroni==0] = 0.000000000001
+  
+  # Add label for the most significant correlation
+  
+  correlation_computed_for_volcano = merge(correlation_computed_for_volcano, Variable_names, by=c("names"), all =TRUE)
+  
+  # categorize significant and non significant correlation
+  correlation_computed_for_volcano$Significance <- cut(correlation_computed_for_volcano$MTO_P_bonferroni,
+                                                       c(-Inf,0.05,Inf),
+                                                       labels = c("Significant","Non significant"))
+  
+  # remove correlation not calculated due to lack of data
+  correlation_computed_for_volcano <- correlation_computed_for_volcano[!is.na(correlation_computed_for_volcano$MTO_P_bonferroni),]
+  
+  return(correlation_computed_for_volcano)
+}
+
+correlation_computed_for_volcano <- Figure_1a_correlation_database(All_value_bin, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y"))
+
+# make the plot
+plot_figure_1a <- ggplot(data=correlation_computed_for_volcano, aes(x=MTO_r, y=-log10(MTO_P_bonferroni))) +# Define graph
+  geom_point(aes(color=Significance, alpha=Significance), size = 3, shape=16)+# Plot dots based on significance value
+  geom_text_repel(data=correlation_computed_for_volcano[!is.na(correlation_computed_for_volcano$label),],
+                  aes(label = label),
+                  size=5, max.overlaps = 10, parse=FALSE) + # plot dot legends
+  geom_hline(yintercept=-log10(0.05), col="black", linetype = "dashed") + # Add line between signifiance and not
+  xlab("Spearman r")+ # X axis label
+  ylab("-Log10( Bonferroni corrected p-value )")+ # Y axis label
+  scale_color_manual(values = c("#B22222","#000000"))+ # color
+  scale_alpha_manual(values = c(1,0.1))+ # transparency value
+  ggtitle("Correlation to MTO")+ # title
+  #annotate(geom = "text",x=-Inf , y=-log10(0.05), label = "0.05 corrected p-value", fontface = 'italic', vjust= -0.5, hjust=-0.1)+
+  scale_fill_Publication() +theme_Publication()+ # scale_colour_Publication()+
+  guides(alpha="none", color ="none")+ # remove legend
+  theme(text = element_text(size = 18),
+        axis.text = element_text(size = 20))
+
+# plot the plot
+plot_figure_1a
+
+# save the plot
+ggsave(filename="figures/plot_figure_1a.pdf",
+       plot=plot_figure_1a,
+       device = "pdf",
+       width=15,
+       height=15,
+       units = "cm")
+```
+
+Figure 1b
+```{r Figure 1b}
+
+
+### DPI_min is a value of the minimum day post infection to take in account. If FALSE, all time points are used
+correlation_database_for_correlation_tables <- function(database, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y"), Variables_to_plot) {
+  ### Filter database
+  if (DPI_min != FALSE) {
+    database = database %>% filter(DPI >= DPI_min)
+  }
+  database = database %>% filter(AIDS_related_Nx %in% Filter_on_AIDS_related_Nx)
+  
+  
+  database <- database[,Variables_to_plot]
+  database = select_if(database, is.numeric)
+  
+  # Defined column names of used variables
+  Variable_names_of_interest <- c("MMU_ID","Viral_strain", "percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent", "percent_Neu", "Galectin_9",
+                 "DTD", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","MTO", "DPI", "Log10PVL",
+                 "ratio_CD4_div_CD8_Tcells", "CD4_CM_among_T_cells_all_date")
+  
+  Labels_of_interest <- c("Animal ID","Viral strain","% Lymphocytes",
+                   "% Granulocytes", "% Neutrophils",
+                   "Plasma galectin 9", "Days to euthanasia",
+                   "CD14 MFI of n-c monocytes",
+                   "MTO", "Days post infection", "Plasma viral load",
+                   "Ratio CD4+/CD8+ T-cells", "% CD4+ CM among T-cells ")
+  
+  names(Labels_of_interest)<-Variable_names_of_interest
+  colnames(database) <- Labels_of_interest[colnames(database)]
+  
+  # compute spearman correlation
+  mydata.rcorr = rcorr(as.matrix(database), type="spearman")
+  
+
+  
+  # # Ordering based on MTO r value, can be usefull
+  # MTO_column_number = grep("MTO", names(All_merge_with_Nao_list))[1]
+  # 
+  # order_abs_r = order(abs(mydata.rcorr$r[,MTO_column_number,drop=FALSE]),decreasing = TRUE)
+  # All_merge_with_Nao_list_order <- All_merge_with_Nao_list[,List_50DPI_YAIDS]
+  # mydata.rcorr = rcorr(as.matrix(All_merge_with_Nao_list_order), type="spearman")
+  
+  # Replace the diagonal NA by 0 (perfect correlation)
+  mydata.rcorr$P[is.na(mydata.rcorr$P)]=0
+  
+  
+  
+  return(mydata.rcorr)
+}
+List_figure_1b <- c("MMU_ID","Viral_strain","MTO","Galectin_9",
+                    "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","cells_Single_Cells_granulocytes___Freq__of_Parent",
+                    "percent_Neu", "percent_Lymph")
+correlation_database_figure_1b <- correlation_database_for_correlation_tables(All_value_bin,
+                                                                                           DPI_min = FALSE,
+                                                                                           Filter_on_AIDS_related_Nx = c("Y", "N"),
+                                                                                           List_figure_1b)
+
+# Make and save the figure
+pdf(file="figures/plot_figure_1b.pdf", width=5, height=5)
+corrplot(correlation_database_figure_1b$r,
+         order="original",
+         type = "lower",
+         tl.col ="black",
+         tl.cex=1,
+         cl.cex = 0.7,
+         cl.offset = 0.2,
+         p.mat = correlation_database_figure_1b$P,
+         sig.level = 0.05,
+         cl.pos="b",
+         add=FALSE,
+         col = rev(COL2('RdBu', 200)))
+dev.off()
+
+```
+
+Figure 1c-g
+```{r Figure 1c-g}
+
+### DEPENDENT OF Figure 1b function
+List_figure_S1a = c("MTO","DTD","Galectin_9", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","cells_Single_Cells_granulocytes___Freq__of_Parent",
+                          "percent_Neu", "percent_Lymph", "CD4_CM_among_T_cells_all_date" ,
+                          "Log10PVL", "DPI","ratio_CD4_div_CD8_Tcells")
+correlation_database_figure_S1a <- correlation_database_for_correlation_tables(All_value_bin,
+                                                                               DPI_min = 50,
+                                                                               Filter_on_AIDS_related_Nx = c("Y"),
+                                                                               List_figure_S1a)
+
+# Make and save the figure
+pdf(file="figures/plot_figure_S1a.pdf", width=5, height=5)
+corrplot(correlation_database_figure_S1a$r,
+         order="original",
+         type = "lower",
+         tl.col ="black",
+         tl.cex=1,
+         cl.cex = 0.7,
+         cl.offset = 0.2,
+         p.mat = correlation_database_figure_S1a$P,
+         sig.level = 0.05,
+         cl.pos="b",
+         add=FALSE,
+         col = rev(COL2('RdBu', 200)))
+dev.off()
+
+```
+
+Figure S1a
+```{r Figure S1a}
+
+### DEPENDENT OF Figure 1b function
+List_figure_S1a = c("MTO","DTD","Galectin_9", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","cells_Single_Cells_granulocytes___Freq__of_Parent",
+                          "percent_Neu", "percent_Lymph", "CD4_CM_among_T_cells_all_date" ,
+                          "Log10PVL", "DPI","ratio_CD4_div_CD8_Tcells")
+correlation_database_figure_S1a <- correlation_database_for_correlation_tables(All_value_bin,
+                                                                               DPI_min = 50,
+                                                                               Filter_on_AIDS_related_Nx = c("Y"),
+                                                                               List_figure_S1a)
+
+# Make and save the figure
+pdf(file="figures/plot_figure_S1a.pdf", width=5, height=5)
+corrplot(correlation_database_figure_S1a$r,
+         order="original",
+         type = "lower",
+         tl.col ="black",
+         tl.cex=1,
+         cl.cex = 0.7,
+         cl.offset = 0.2,
+         p.mat = correlation_database_figure_S1a$P,
+         sig.level = 0.05,
+         cl.pos="b",
+         add=FALSE,
+         col = rev(COL2('RdBu', 200)))
+dev.off()
+
+```
