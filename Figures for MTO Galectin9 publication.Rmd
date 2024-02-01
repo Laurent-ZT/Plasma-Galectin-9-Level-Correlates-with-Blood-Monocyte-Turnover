@@ -1,0 +1,1472 @@
+---
+title: "Figure markdown"
+author: "Laurent"
+date: "2023-04-11"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+packages <- c("readxl", "lme4", "nlme","gridExtra","grid", "car","ggpmisc","flextable","officer","caret", "ROCit", "dplyr","RColorBrewer","ggrepel" ,"ggbeeswarm","ggthemes","Cairo", "corrplot","Hmisc","ggplot2","pROC", "aod", "tidyr", "ggcorrplot","pheatmap", "gridExtra", "effsize","gplots","writexl","corrr","segmented")
+install.packages(setdiff(packages, rownames(installed.packages())))  
+
+library(readxl)
+library(lme4)
+library(nlme)
+library(car)
+library(dplyr)
+library(corrplot)
+library(Hmisc)
+library(ggplot2)
+library(pROC)
+library(aod)
+library(tidyr)
+library(ggcorrplot)
+library(gridExtra)
+library(effsize)
+library(writexl)
+library(corrr)
+library(segmented)
+library(gplots)
+library(pheatmap)
+library(ggthemes)
+library(RColorBrewer)
+library(Cairo)
+library(ggrepel)
+library(ggbeeswarm)
+library(caret)
+library(ROCit)
+library(flextable)
+library(officer)
+library(ggpmisc)
+library(gridExtra)
+library(grid)
+
+All_value_initial <- read_excel("Publication_data_galectin9_MTO.xlsx")
+Variable_names <- read_excel("Variable names.xlsx")
+### convert to factor
+All_value_initial$Phase <- factor(All_value_initial$Phase, c("Uninfected", "Acute phase", "Chronic phase", "End stage"))
+
+Bisphosphonate_data <- read_excel("Bisphosphonate_data.xlsx", 
+                             sheet = "Sheet2", col_types = c("numeric", 
+                                                             "text", "date", "numeric", "numeric", 
+                                                             "numeric", "text", "date", "text","text", 
+                                                             "text", "text"))
+
+# Load them from Koundy's work https://github.com/koundy/ggplot_theme_Publication/tree/16454315a47c903b38ab176a820950f6e67ed81a
+
+theme_Publication <- function(base_size=14, base_family="sans") {
+  library(grid)
+  library(ggthemes)
+  (theme_foundation(base_size=base_size, base_family=base_family)
+    + theme(plot.title = element_text(face = "bold",
+                                      size = rel(1.2), hjust = 0.5),
+            text = element_text(),
+            panel.background = element_rect(colour = NA),
+            plot.background = element_rect(colour = NA),
+            panel.border = element_rect(colour = NA),
+            axis.title = element_text(face = "bold",size = rel(1)),
+            axis.title.y = element_text(angle=90,vjust =2),
+            axis.title.x = element_text(vjust = -0.2),
+            axis.text = element_text(), 
+            axis.line.x = element_line(colour="black"),
+            axis.line.y = element_line(colour="black"),
+            axis.ticks = element_line(),
+            #panel.grid.major = element_line(colour="#f0f0f0"),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            legend.key = element_rect(colour = NA),
+            #legend.position = "bottom",
+            #legend.direction = "horizontal",
+            legend.key.size= unit(0.2, "cm"),
+            #legend.margin = unit(0, "cm"),
+            legend.spacing = unit(0, "cm"),
+            legend.title = element_text(face="italic"),
+            plot.margin=unit(c(10,5,5,5),"mm"),
+            strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+            strip.text = element_text(face="bold")
+    ))
+  
+}
+
+scale_colour_Publication <- function(...){
+      library(scales)
+      discrete_scale("colour","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+scale_fill_Publication <- function(...){
+  library(scales)
+  discrete_scale("fill","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+  
+}
+
+if (!dir.exists("figures")) {dir.create("figures")}
+if (!dir.exists("tables")) {dir.create("tables")}
+
+```
+
+## Build the databases
+
+To limit the impact of missing values at each monocyte tunrover (MTO) time point, the average value of each parameter is calculated within a 15-day window of said MTO. This create a binned version of the database
+```{r Databases building}
+###average all the value within one week of an MTO time point
+bin_data_around_MTO <- function(database, time_frame = 7, fixed_elements = c("DPI","DTD", "Age_at_infection_y", "WPI", "number_of_draw_last_20_days")) {
+  
+  # Get list of numeric columns
+  numeric_cols <- names(database)[sapply(database, is.numeric)]
+  
+  # Identify columns to be binned
+  bin_cols <- setdiff(numeric_cols, fixed_elements)
+  
+  # For each animal
+  for (mmu in unique(database$MMU_ID)) {
+    
+    # Subset data for current animal
+    temp_df_mmu <- database %>% filter(MMU_ID == mmu)
+    
+    # Get DPI values for MTO time points
+    MTO_DPI_list <- temp_df_mmu$DPI[!is.na(temp_df_mmu$MTO)]
+    
+    # For each MTO time point
+    for (dpi in MTO_DPI_list) {
+      
+      # Subset data within time frame around MTO time point
+      subset_data <- temp_df_mmu %>%
+        filter(DPI >= dpi - time_frame & DPI <= dpi + time_frame)
+      
+      # For each column to be binned
+      for (col in bin_cols) {
+        
+        # Calculate mean of subset, ignoring NA values
+        mean_val <- mean(subset_data[[col]], na.rm = TRUE)
+        
+        # Replace values within time frame with mean, if not NA
+        database[[col]][which(database$DPI == dpi & database$MMU_ID == mmu)] <- ifelse(!is.na(mean_val), mean_val, NA)
+      }
+    }
+  }
+  
+  # Remove rows without MTO value
+  database <- database[!is.na(database$MTO),]
+  
+  # Remove empty columns
+  empty_cols <- sapply(database, function(x) all(is.na(x)))
+  database <- database[, !empty_cols]
+  
+  # Recalculate log10PVL altered by the mean
+  database$Log10PVL = log10(database$PVL)
+  return(database)
+}
+All_value_bin <- bin_data_around_MTO(All_value_initial, time_frame = 7, fixed_elements = c("DPI", "Age_at_infection_y", "WPI", "number_of_draw_last_20_days"))
+
+
+
+```
+
+
+## Making of figure 1
+Figure 1a
+```{r Figure 1a}
+Variable_names <- read_excel("Volcano_plot_label.xlsx")
+
+### DPI_min is a value of the minimum day post infection to take in account. If FALSE, all time points are used
+Figure_1a_correlation_database <- function(database, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y")) {
+  ### Filter database
+  if (DPI_min != FALSE) {
+    database = database %>% filter(DPI >= DPI_min)
+  }
+  database = database %>% filter(AIDS_related_Nx %in% Filter_on_AIDS_related_Nx)
+  database = select_if(database, is.numeric)
+  
+  # remove column Days to death since it requier knowledge fo the future
+  database$DTD = NULL
+  
+  ### Calculate Spearman correlation
+  mydata.rcorr = rcorr(as.matrix(database), type="spearman")
+  
+  # Colect MTO column number
+  MTO_column_number = grep("MTO", row.names(mydata.rcorr$P))[1]
+  
+  # get number of tests
+  nb_of_tests = length(database)
+  
+  # Build database with variable names, Spearman P and Spearman r for the correlation of the variable with MTO
+  correlation_computed_for_volcano <- data.frame(names=row.names(mydata.rcorr$P)[-MTO_column_number],
+                                                 MTO_P = mydata.rcorr$P[,MTO_column_number][-MTO_column_number],
+                                                 MTO_r = mydata.rcorr$r[,MTO_column_number][-MTO_column_number])
+  
+  # apply bonferonni correction ot p value
+  correlation_computed_for_volcano$MTO_P_bonferroni = correlation_computed_for_volcano$MTO_P * nb_of_tests
+  
+  # change 0 p value to 0.000000000001 
+  correlation_computed_for_volcano$MTO_P_bonferroni[correlation_computed_for_volcano$MTO_P_bonferroni==0] = 0.000000000001
+  
+  # Add label for the most significant correlation
+  
+  correlation_computed_for_volcano = merge(correlation_computed_for_volcano, Variable_names, by=c("names"), all =TRUE)
+  
+  # categorize significant and non significant correlation
+  correlation_computed_for_volcano$Significance <- cut(correlation_computed_for_volcano$MTO_P_bonferroni,
+                                                       c(-Inf,0.05,Inf),
+                                                       labels = c("Significant","Non significant"))
+  
+  # remove correlation not calculated due to lack of data
+  correlation_computed_for_volcano <- correlation_computed_for_volcano[!is.na(correlation_computed_for_volcano$MTO_P_bonferroni),]
+  
+  return(correlation_computed_for_volcano)
+}
+
+correlation_computed_for_volcano <- Figure_1a_correlation_database(All_value_bin, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y"))
+
+# make the plot
+plot_figure_1a <- ggplot(data=correlation_computed_for_volcano, aes(x=MTO_r, y=-log10(MTO_P_bonferroni))) +# Define graph
+  geom_point(aes(color=Significance, alpha=Significance), size = 3, shape=16)+# Plot dots based on significance value
+  geom_text_repel(data=correlation_computed_for_volcano[!is.na(correlation_computed_for_volcano$label),],
+                  aes(label = label),
+                  size=5, max.overlaps = 10, parse=FALSE) + # plot dot legends
+  geom_hline(yintercept=-log10(0.05), col="black", linetype = "dashed") + # Add line between signifiance and not
+  xlab("Spearman r")+ # X axis label
+  ylab("-Log10( Bonferroni corrected p-value )")+ # Y axis label
+  scale_color_manual(values = c("#B22222","#000000"))+ # color
+  scale_alpha_manual(values = c(1,0.1))+ # transparency value
+  ggtitle("Correlation to MTO")+ # title
+  scale_fill_Publication() +theme_Publication()+ # scale_colour_Publication()+
+  guides(alpha="none", color ="none")+ # remove legend
+  theme(text = element_text(size = 18),
+        axis.text = element_text(size = 20))
+
+# save the plot
+ggsave(filename="figures/plot_figure_1a.pdf",
+       plot=plot_figure_1a,
+       device = "pdf",
+       width=15,
+       height=15,
+       units = "cm")
+```
+
+Figure 1b
+```{r Figure 1b}
+
+
+### DPI_min is a value of the minimum day post infection to take in account. If FALSE, all time points are used
+correlation_database_for_correlation_tables <- function(database, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y"), Variables_to_plot) {
+  ### Filter database
+  if (DPI_min != FALSE) {
+    database = database %>% filter(DPI >= DPI_min)
+  }
+  database = database %>% filter(AIDS_related_Nx %in% Filter_on_AIDS_related_Nx)
+  
+  
+  database <- database[,Variables_to_plot]
+  database = select_if(database, is.numeric)
+  
+  # Defined column names of used variables
+  Variable_names_of_interest <- c("MMU_ID","Viral_strain", "percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent", "percent_Neu", "Galectin_9",
+                                  "DTD", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","MTO", "DPI", "Log10PVL",
+                                  "ratio_CD4_div_CD8_Tcells", "CD4_CM_among_T_cells_all_date")
+  
+  Labels_of_interest <- c("Animal ID","Viral strain","% Lymphocytes",
+                          "% Granulocytes", "% Neutrophils",
+                          "Plasma galectin 9", "Days to euthanasia",
+                          "CD14 MFI of n-c monocytes",
+                          "MTO", "Days post infection", "Plasma viral load",
+                          "Ratio CD4+/CD8+ T-cells", "% CD4+ CM among T-cells ")
+  
+  names(Labels_of_interest)<-Variable_names_of_interest
+  colnames(database) <- Labels_of_interest[colnames(database)]
+  
+  # compute spearman correlation
+  mydata.rcorr = rcorr(as.matrix(database), type="spearman")
+  
+  
+  
+  # # Ordering based on MTO r value, can be usefull
+  # MTO_column_number = grep("MTO", names(All_merge_with_Nao_list))[1]
+  # 
+  # order_abs_r = order(abs(mydata.rcorr$r[,MTO_column_number,drop=FALSE]),decreasing = TRUE)
+  # All_merge_with_Nao_list_order <- All_merge_with_Nao_list[,List_50DPI_YAIDS]
+  # mydata.rcorr = rcorr(as.matrix(All_merge_with_Nao_list_order), type="spearman")
+  
+  # Replace the diagonal NA by 0 (perfect correlation)
+  mydata.rcorr$P[is.na(mydata.rcorr$P)]=0
+  
+  
+  
+  return(mydata.rcorr)
+}
+List_figure_1b <- c("MMU_ID","Viral_strain","MTO","Galectin_9",
+                    "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","cells_Single_Cells_granulocytes___Freq__of_Parent",
+                    "percent_Neu", "percent_Lymph")
+correlation_database_figure_1b <- correlation_database_for_correlation_tables(All_value_bin,
+                                                                              DPI_min = FALSE,
+                                                                              Filter_on_AIDS_related_Nx = c("Y", "N"),
+                                                                              List_figure_1b)
+
+# Make and save the figure
+pdf(file="figures/plot_figure_1b.pdf", width=5, height=5)
+corrplot(correlation_database_figure_1b$r,
+         order="original",
+         type = "lower",
+         tl.col ="black",
+         tl.cex=1,
+         cl.cex = 0.7,
+         cl.offset = 0.2,
+         p.mat = correlation_database_figure_1b$P,
+         sig.level = 0.05,
+         cl.pos="b",
+         add=FALSE,
+         col = rev(COL2('RdBu', 200)))
+dev.off()
+
+```
+
+# Making Figure 1c-g
+```{r Figure 1c-g}
+
+### DEPENDENT OF Figure 1b function
+List_figure_1c_to_g <- c("MMU_ID","Viral_strain","MTO","Galectin_9",
+                         "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","cells_Single_Cells_granulocytes___Freq__of_Parent",
+                         "percent_Neu", "percent_Lymph")
+# correlation_database_figure_S1a <- correlation_database_for_correlation_tables(All_value_bin,
+#                                                                                DPI_min = 50,
+#                                                                                Filter_on_AIDS_related_Nx = c("Y"),
+#                                                                                List_figure_S1a)
+
+
+Figure_1c_g_maker <- function(X, Y, database, DPI_min = FALSE, Filter_on_AIDS_related_Nx = c("Y", "N")) {
+  ### Filter database
+  if (DPI_min != FALSE) {
+    database = database %>% filter(DPI >= DPI_min)
+  }
+  database = database %>% filter(AIDS_related_Nx %in% Filter_on_AIDS_related_Nx)
+  
+  ### remove na from database for the variable of interest
+  database_no_na <- database[!(is.na(database[[deparse(substitute(X))]]) | is.na(database[[deparse(substitute(Y))]])),]
+  
+  
+  ###plot design parameter
+  safe_colorblind_palette <- palette.colors(palette = "Okabe-Ito")[-5]
+  
+  point_shape_df <- data.frame(MMU_ID=c(unique(database$MMU_ID)),
+                               shape_value=c(0:(length(unique(database$MMU_ID))-1)))
+  color_df <- data.frame(AIDS_related_Nx=unique(database$AIDS_related_Nx),
+                         color_value=safe_colorblind_palette[0:length(unique(database$AIDS_related_Nx))])
+  
+  ###label names
+  List_full <- c("MMU_ID","Viral_strain", "percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent", "percent_Neu", "Galectin_9",
+                 "DTD", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","MTO", "DPI", "Log10PVL",
+                 "ratio_CD4_div_CD8_Tcells", "CD4_CM_among_T_cells_all_date")
+  lab_names_df <- data.frame(List_full,labs_names = c("Animal ID","Viral strain","% Lymphocytes\n(from CBC)",
+                                                      "% Granulocytes\n(from flow cytometry)", "% Neutrophils\n(from CBC)",
+                                                      "Plasma galectin 9\n(ng/ml)", "Days to euthanasia\n ",
+                                                      "CD14 MFI of n-c monocytes\n(normalized on T cells CD14 MFI)",
+                                                      "MTO (%)", "Days post infection\n ", "Plasma viral load\n(Log10(copies/ml))",
+                                                      "Ratio CD4+/CD8+ T-cells\n ", "% CD4 CM among T-cells\n "))
+  
+  
+  
+  #####calculate correlation
+  mydata.rcorr = rcorr(database[[deparse(substitute(X))]], database[[deparse(substitute(Y))]], type="spearman")
+  labels = paste0("Spearman r = ",format(mydata.rcorr$r[2,1], digits=3),'\np-value = ', format(mydata.rcorr$P[2,1], digits=3))
+  labels
+  
+  
+  ggplot(database_no_na, aes(x={{X}}, y={{Y}}, group = MMU_ID)) + 
+    geom_point(aes(color=AIDS_related_Nx, shape=cut(DPI,c(min(DPI),1,50,max(DPI)+1), right = FALSE, labels = c("< 0 (Uninfected)","< 50 (Acute)",">= 50 (Post-acute)"))), size = 3) +
+    geom_path(aes(), alpha = 0.1)+
+    
+    scale_shape_manual(values = c(1,2,16))+
+    scale_color_manual(labels = c("N" = "Study end", "Y"="Medicall cull"),values = sort(color_df$color_value[color_df$AIDS_related_Nx %in% unique(database_no_na$AIDS_related_Nx)],decreasing = TRUE))+
+    labs(color="Cause of animal euthanasia", shape = "Days post infection")+
+    
+    
+    xlab(lab_names_df[which(lab_names_df[[1]] == deparse(substitute(X))),2])+
+    ylab(lab_names_df[which(lab_names_df[[1]] == deparse(substitute(Y))),2])+
+    ylim(min(database_no_na[[deparse(substitute(Y))]]), max(database_no_na[[deparse(substitute(Y))]])*1.2)+
+    
+    {if (deparse(substitute(X)) == "DTD"){
+      scale_x_reverse() +
+        annotate("text", x = max(database_no_na[[deparse(substitute(X))]]), y =max(database_no_na[[deparse(substitute(Y))]])*1.2 , label = labels, hjust = 0, vjust = 1, size = 7)
+    } else {
+      annotate("text", x = min(database_no_na[[deparse(substitute(X))]]), y = max(database_no_na[[deparse(substitute(Y))]])*1.2, label = labels, hjust = 0, vjust = 1, size = 7)
+    }
+    }+
+    
+    
+    
+    guides(color = guide_legend(order=1),
+           shape = guide_legend(order=2))+
+    scale_fill_Publication() +theme_Publication()+
+    theme(legend.position='none')+ ###comment to add legend
+    theme(text = element_text(size = 18),
+          axis.text = element_text(size = 20))
+}
+
+# save the plots
+ggsave(filename="figures/plot_figure_1c.pdf",
+       plot=Figure_1c_g_maker(Galectin_9, MTO, All_value_bin, DPI_min = FALSE, Filter_on_AIDS_related_Nx = c("Y","N")),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+ggsave(filename="figures/plot_figure_1d.pdf",
+       plot=Figure_1c_g_maker(Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_, MTO, All_value_bin, DPI_min = FALSE, Filter_on_AIDS_related_Nx = c("Y","N")),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+ggsave(filename="figures/plot_figure_1e.pdf",
+       plot=Figure_1c_g_maker(cells_Single_Cells_granulocytes___Freq__of_Parent, MTO, All_value_bin, DPI_min = FALSE, Filter_on_AIDS_related_Nx = c("Y","N")),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+ggsave(filename="figures/plot_figure_1f.pdf",
+       plot=Figure_1c_g_maker(percent_Neu, MTO, All_value_bin, DPI_min = FALSE, Filter_on_AIDS_related_Nx = c("Y","N")),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+ggsave(filename="figures/plot_figure_1g.pdf",
+       plot=Figure_1c_g_maker(percent_Lymph, MTO, All_value_bin, DPI_min = FALSE, Filter_on_AIDS_related_Nx = c("Y","N")),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+
+
+
+
+```
+
+## Making of figure 2
+# MakingFigure 2a
+```{r Figure 2a}
+
+Figure_2a_maker <- function(database) {
+  MMU_id_list = c()
+  MTO_list = c()
+  Gal9_list = c()
+  DPI_list = c()
+  phase_list = c()
+  Viral_strain_list = c()
+  AIDS_related_Nx_list = c()
+
+  ####select and annotate acute phase values
+  for (temp_mmu in unique(database$MMU_ID)) {
+    temp_database <- database %>% filter(MMU_ID == temp_mmu, DTD > 50)
+    
+    ###Find last uninfected time point
+    temp_database_uninfected = temp_database %>% filter(DPI <= 0)
+    if(nrow(temp_database_uninfected) == 0){
+      last_DPI_uninfected = NA
+      MTO_list = c(MTO_list, NA)
+      Gal9_list = c(Gal9_list, NA)
+    } else {
+      last_DPI_uninfected <- max(temp_database_uninfected$DPI)
+      MTO_list = c(MTO_list, temp_database$MTO[which(temp_database$DPI == last_DPI_uninfected)])
+      Gal9_list = c(Gal9_list, temp_database$Galectin_9[which(temp_database$DPI  == last_DPI_uninfected)])
+    }
+    
+    ###Find first infected time point (acute phase)
+    temp_database_infected = temp_database %>% filter(DPI > 0)
+    if(nrow(temp_database_infected) == 0){
+      first_DPI_infected = NA
+      MTO_list = c(MTO_list, NA)
+      Gal9_list = c(Gal9_list, NA)
+    } else {
+      first_DPI_infected <- min(temp_database_infected$DPI)
+      MTO_list = c(MTO_list, temp_database_infected$MTO[which(temp_database_infected$DPI == first_DPI_infected)])
+      Gal9_list = c(Gal9_list, temp_database_infected$Galectin_9[which(temp_database_infected$DPI  == first_DPI_infected)])
+    }
+    
+    ###Find second infected time point (late acute)
+    temp_database_infected_second = temp_database %>% filter(DPI > first_DPI_infected)
+    if(nrow(temp_database_infected_second) == 0){
+      second_DPI_infected = NA
+      MTO_list = c(MTO_list, NA)
+      Gal9_list = c(Gal9_list, NA)
+    } else {
+      second_DPI_infected <- min(temp_database_infected_second$DPI)
+      MTO_list = c(MTO_list, temp_database$MTO[which(temp_database$DPI == second_DPI_infected)])
+      Gal9_list = c(Gal9_list, temp_database$Galectin_9[which(temp_database$DPI  == second_DPI_infected)])
+    }
+    
+    ordered_DPI = c(last_DPI_uninfected, first_DPI_infected, second_DPI_infected)
+    
+    MMU_id_list = c(MMU_id_list, rep(temp_mmu,3))
+    Viral_strain_list = c(Viral_strain_list, rep(unique(temp_database$Viral_strain),3))
+    AIDS_related_Nx_list = c(AIDS_related_Nx_list, rep(unique(temp_database$AIDS_related_Nx),3))
+    DPI_list = c(DPI_list, ordered_DPI)
+    phase_list = c(phase_list, c("Uninfected","Acute","Late acute"))
+  }
+  
+  results_df_phase = data.frame(MMU_ID = MMU_id_list, MTO = MTO_list, Galectin_9 = Gal9_list,
+                                DPI=DPI_list,Viral_strain=Viral_strain_list,AIDS_related_Nx=AIDS_related_Nx_list,
+                                Phase = factor(phase_list, levels = c("Uninfected","Acute","Late acute")))
+  results_df_phase_no_NA <- results_df_phase[!is.na(results_df_phase$Galectin_9),]
+  
+  
+  
+  
+  
+  
+  
+  
+  #####calculate correlation
+  viral_strain_list_2 = c()
+  r_list_2 = c()
+  P_list_2 = c()
+  ###calculate correlation for all crial strian mixed
+  temp_results_df_phase_no_NA <- results_df_phase_no_NA
+  mydata.rcorr = rcorr(temp_results_df_phase_no_NA$MTO, temp_results_df_phase_no_NA$Galectin_9, type="spearman")
+  all_viral_load_labels = paste0("Spearman r = ",format(as.list(mydata.rcorr$r[2,1]), digits=3),
+                                 '\np-value = ', format(as.list(mydata.rcorr$P[2,1]), digits=3))
+
+  
+  #####make doplot
+  point_shape_df <- data.frame(MMU_ID=c(unique(database$MMU_ID)), shape_value=c(0:(length(unique(database$MMU_ID))-1)))
+  List_50DPI_YAIDS <- c("MMU_ID","Viral_strain", "percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent", "percent_Neu", "Galectin_9",
+                        "DTD", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","MTO", "DPI")
+
+  lab_names_df <- data.frame(List_50DPI_YAIDS,labs_names = c("Animal ID","Viral strain","% Lymphocytes in leukocytes\n(from CBC)", "% Granulocytes in leukocytes\n(from flow cytometry)", "% Neutrophils in leukocytes\n(from CBC)", "Plasma galectin 9\n(ng/ml)", "Days to death", "CD14 MFI of non classical monocytes\n(normalized  on CD14 MFI of T cells)", "MTO", "Days post infection"))
+
+  
+  Variable_to_plot_full = "Galectin_9"
+  Variable_to_plot = sym(Variable_to_plot_full)
+  
+  
+  safe_colorblind_palette <- palette.colors(palette = "Okabe-Ito")[-5]
+  
+  #####make doplot
+  phase_list = c("Uninfected","Acute","Late acute", "Chronic phase", "End stage")
+  color_df <- data.frame(Phase=phase_list, color_value=safe_colorblind_palette[0:length(phase_list)])
+  
+  mto_lim=range(database$MTO, na.rm=TRUE)
+  gal_9_lim = range(database$Galectin_9, na.rm=TRUE)
+  
+  ggplot(results_df_phase_no_NA, aes(x=!!Variable_to_plot, y=MTO)) + 
+    geom_point(aes(shape=MMU_ID, color=Phase), size = 3) + 
+    geom_path(aes( group=MMU_ID), alpha = 0.2)+
+    
+    scale_shape_manual(values = as.numeric(point_shape_df$shape_value[point_shape_df$MMU_ID %in% unique(results_df_phase_no_NA$MMU_ID)]))+
+    scale_linetype_manual(values = c(Y="solid", N="twodash"))+
+    scale_color_manual(values = color_df$color_value[color_df$Phase %in% unique(results_df_phase_no_NA$Phase)])+
+    
+    ggtitle(paste("Early phases"))+
+    ylab("MTO (%)")+
+    xlab(lab_names_df[which(lab_names_df[[1]] == Variable_to_plot_full),2])+
+    ylim(mto_lim[1], mto_lim[2]*1.2)+
+    xlim(gal_9_lim)+
+    
+    labs(color="Infection\nstatus", shape = "Animal ID")+
+    guides(color = guide_legend(order=1),
+           shape = guide_legend(order=2))+
+    scale_fill_Publication() +theme_Publication() +# scale_colour_Publication()+
+    
+    # # # # #for per viral strain facet plots
+    annotate(geom="text",x = min(results_df_phase_no_NA[[Variable_to_plot_full]]), y = mto_lim[2]*1.2, label = all_viral_load_labels, hjust = 0, vjust = 1)+
+    
+    theme(panel.spacing = unit(1.3, "lines"),
+          text = element_text(size = 18))+
+    theme(legend.position='none')### change to 'right' to add a legend
+}
+ggsave(filename="figures/plot_figure_2a.pdf",
+       plot=Figure_2a_maker(All_value_bin),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+```
+
+# Making Figure 2b
+```{r Figure 2b}
+
+Figure_2b_maker <- function(database, DPI_min = 50) {
+  
+  #####calculate correlation
+  database_late <- database %>% filter (DPI > DPI_min)
+  database_late <- database_late[!is.na(database_late$Galectin_9),]
+  mydata.rcorr = rcorr(database_late$MTO, database_late$Galectin_9, type="spearman")
+  all_viral_load_labels = paste0("Spearman r = ",format(as.list(mydata.rcorr$r[2,1]), digits=3),
+                                 '\np-value = ', format(as.list(mydata.rcorr$P[2,1]), digits=3))
+  
+  
+  #####make doplot
+  point_shape_df <- data.frame(MMU_ID=c(unique(database$MMU_ID)), shape_value=c(0:(length(unique(database$MMU_ID))-1)))
+  List_50DPI_YAIDS <- c("MMU_ID","Viral_strain", "percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent", "percent_Neu", "Galectin_9",
+                        "DTD", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","MTO", "DPI")
+  # List_classic <- c("MMU_ID","Viral_strain", "Log10PVL", "ratio_CD4_div_CD8_Tcells", "CD4_CM_among_T_cells_all_date" ,"MTO", "DPI")
+  lab_names_df_List_50DPI_YAIDS <- data.frame(List_50DPI_YAIDS,labs_names = c("Animal ID","Viral strain","% Lymphocytes in leukocytes\n(from CBC)", "% Granulocytes in leukocytes\n(from flow cytometry)", "% Neutrophils in leukocytes\n(from CBC)", "Plasma galectin 9\n(ng/ml)", "Days to death", "CD14 MFI of non classical monocytes\n(normalized  on CD14 MFI of T cells)", "MTO", "Days post infection"))
+  # lab_names_df_List_classic <- data.frame(List_classic,labs_names = c("Animal ID","Viral strain","Plasma viral load\n(Log10(copies/ml))", "ratio CD4/CD8 T-cells", "% CD4 CM among T-cells", "MTO", "Days post infection"))
+  lab_names_df=lab_names_df_List_50DPI_YAIDS
+  
+  Variable_to_plot_full = "Galectin_9"
+  Variable_to_plot = sym(Variable_to_plot_full)
+  
+  
+  safe_colorblind_palette <- palette.colors(palette = "Okabe-Ito")[-5]
+  
+  #####make doplot
+  phase_list = c("Uninfected","Acute","Late acute", "Chronic phase", "End stage")
+  color_df <- data.frame(Phase=phase_list, color_value=safe_colorblind_palette[0:length(phase_list)])
+  
+  mto_lim=range(database$MTO, na.rm=TRUE)
+  gal_9_lim = range(database$Galectin_9, na.rm=TRUE)
+  
+  ggplot(database_late, aes(x=!!Variable_to_plot, y=MTO)) + 
+    geom_point(aes(shape=MMU_ID, color=Phase), size = 3) + 
+    geom_path(aes( group=MMU_ID), alpha = 0.2)+
+    
+    scale_shape_manual(values = as.numeric(point_shape_df$shape_value[point_shape_df$MMU_ID %in% unique(database_late$MMU_ID)]))+
+    scale_linetype_manual(values = c(Y="solid", N="twodash"))+
+    scale_color_manual(values = color_df$color_value[color_df$Phase %in% unique(database_late$Phase)])+
+    
+    ggtitle(paste("Late phases"))+
+    ylab("MTO (%)")+
+    xlab(lab_names_df[which(lab_names_df[[1]] == Variable_to_plot_full),2])+
+    ylim(mto_lim[1], mto_lim[2]*1.2)+
+    xlim(gal_9_lim)+
+    
+    labs(color="Infection\nstatus", shape = "Animal ID")+
+    guides(color = guide_legend(order=1),
+           shape = guide_legend(order=2))+
+    scale_fill_Publication() +theme_Publication() +# scale_colour_Publication()+
+    
+    annotate(geom="text", x = min(database_late[[Variable_to_plot_full]]), y = mto_lim[2]*1.2, label = all_viral_load_labels, hjust = 0, vjust = 1)+
+    
+    theme(panel.spacing = unit(1.3, "lines"),
+          text = element_text(size = 18))+
+    theme(legend.position='none')### change to 'right' to add a legend
+}
+ggsave(filename="figures/plot_figure_2b.pdf",
+       plot=Figure_2b_maker(All_value_bin, DPI_min = 50),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+```
+
+## Making of figure 3, S4, and Tables S4-6
+```{r figure 3 and S4}
+#####Prediction AUC and ROC of single measurement
+
+Figure_3_maker <- function(database, database_not_binned, Filter_on_DPI = TRUE, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y","N"),
+                           study_parameter = "MTO", Cuts = c(-Inf,13.2,Inf), Cuts_labels = c(0,1), Cuts_name = c("1" ="Yes", "0" = "No"),
+                           legend_name = "Ethically required\neuthanasia in less\nthan 75 days",
+                           table_name = "Table_S4",
+                           Figure_name = "Markers of MTO level") {
+  
+  if (Filter_on_DPI) {
+    database_all = database %>% filter(DPI >= DPI_min)
+    database_not_binned_all_not_binned = database_not_binned %>% filter(DPI >= DPI_min)
+    # DPI_min = paste0("_", DPI_min)
+  } else {
+    database_all = database
+    database_not_binned_all_not_binned = database_not_binned
+    # DPI_min = "_all_DPI"
+  }
+  
+  database_all = database_all %>% filter(AIDS_related_Nx %in% Filter_on_AIDS_related_Nx)
+  database_not_binned_all_not_binned  = database_not_binned_all_not_binned %>% filter(AIDS_related_Nx %in% Filter_on_AIDS_related_Nx)
+
+  Variable_list <- c("MMU_ID", "Viral_strain", "percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent",
+                     "percent_Neu", "Galectin_9", "DTD", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_", 
+                     "MTO", "Log10PVL", "ratio_CD4_div_CD8_Tcells", "CD4_CM_among_T_cells_all_date", 
+                     "DPI", "AIDS_related_Nx")
+  
+
+  Variable_names = c("Animal ID","Viral strain","% Lymphocytes\n(from CBC)",
+                     "% Granulocytes\n(from flow cytometry)", "% Neutrophils\n(from CBC)",
+                     "Plasma galectin 9\n(ng/ml)", "Days to euthanasia\n ",
+                     "CD14 MFI of n-c monocytes\n(normalized on T cells CD14 MFI)",
+                     "MTO (%)", "Plasma viral load\n(Log10(copies/ml))",
+                     "Ratio CD4+/CD8+ T-cells\n ", "% CD4 CM among T-cells\n ", "Days post infection\n ", "Medical cull")
+  
+  names(Variable_names)<-Variable_list
+
+  data_for_modeling <- subset(database_all, select = Variable_list)
+  data_for_modeling_not_binned <- subset(database_not_binned_all_not_binned, select = Variable_list)
+  
+  
+  if (is.numeric(data_for_modeling[[study_parameter]])) {
+    factor <- cut(data_for_modeling[[study_parameter]],Cuts, labels = Cuts_labels)
+    factor_not_binned <- cut(data_for_modeling_not_binned[[study_parameter]],Cuts, labels = Cuts_labels)
+  } else {
+    factor <- factor(data_for_modeling[[study_parameter]],Cuts, labels = Cuts_labels)
+    factor_not_binned <- factor(data_for_modeling_not_binned[[study_parameter]],Cuts, labels = Cuts_labels)
+  }
+  data_for_modeling$study_parameter_factored <- as.numeric(levels(factor))[factor]
+  data_for_modeling_not_binned$study_parameter_factored <- as.numeric(levels(factor_not_binned))[factor_not_binned]
+  
+  ##### If time to medical cull could not be determined due to the end of the study censorship, samples were not included in panel b.
+  if (study_parameter == "DTD") {
+    data_for_modeling_not_binned <- data_for_modeling_not_binned %>% filter (!(AIDS_related_Nx == "N" & DTD < Cuts[2])) #Samples not dead of AIDS and closer to the end of study than the time to medical cull threshold
+  }
+  
+  
+  data_for_all_model <- select_if(data_for_modeling, is.numeric)
+  data_for_all_model_not_binned <- select_if(data_for_modeling_not_binned, is.numeric)
+
+  list_of_mesurment <- names(data_for_all_model)
+  
+  
+  ###################Prediction death in 75 days
+  variable_name = c()
+  AUC = c()
+  Threshold_value = c()
+  Threshold_specificity = c()
+  Threshold_sensitivity = c()
+  for (i in list_of_mesurment[!list_of_mesurment %in% c(study_parameter, "study_parameter_factored", "DTD")]) { ###DTD is removed scince it can not be used to make prediction since the data needs future knowledge to exist
+
+    ###if some NA exist, use the binned database
+    if(anyNA(data_for_all_model_not_binned[[study_parameter]])) {
+      temp_data = data_for_all_model[!is.na(data_for_all_model[[i]]),]
+    } else {
+      temp_data = data_for_all_model_not_binned[!is.na(data_for_all_model_not_binned[[i]]),]
+    }
+    
+    roc_object = roc(temp_data$study_parameter_factored, temp_data[[i]])
+    variable_name = c(variable_name, i)
+    AUC = c(AUC, roc_object$auc)
+
+    Threshold_value = c(Threshold_value,
+                        coords(roc_object, "best", "threshold")$threshold[length(coords(roc_object, "best", "threshold")$threshold)])
+    Threshold_specificity = c(Threshold_specificity,
+                              coords(roc_object, "best", "threshold")$specificity[length(coords(roc_object, "best", "threshold")$specificity)])
+    Threshold_sensitivity = c(Threshold_sensitivity,
+                              coords(roc_object, "best", "threshold")$sensitivity[length(coords(roc_object, "best", "threshold")$sensitivity)])
+  }
+  
+  results_df = data.frame(variable_name, AUC, Threshold_value, Threshold_specificity, Threshold_sensitivity)
+  results_df = results_df[order(results_df$AUC, decreasing = TRUE),]
+  
+  results_df_proper_names = results_df
+  results_df_proper_names$variable_name = Variable_names[results_df$variable_name]
+  
+  write_xlsx(results_df_proper_names,paste0("tables/",table_name,".xlsx"))
+  
+  #####plot two bests results
+  safe_colorblind_palette <- palette.colors(palette = "Okabe-Ito")[-5]
+  lab_names_df <- data.frame(Variable_list,labs_names = c("Animal ID","Viral strain","% Lymphocytes in leukocytes\n(from CBC)",
+                                                          "% Granulocytes in leukocytes\n(from flow cytometry)",
+                                                          "% Neutrophils in leukocytes\n(from CBC)", "Plasma galectin 9\n(ng/ml)",
+                                                          "Days to death", "CD14 MFI of non classical monocytes\n(normalized  on CD14 MFI of T cells)",
+                                                          "MTO","Plasma viral load\n(Log10(copies/ml))", "ratio CD4/CD8 T-cells",
+                                                          "% CD4 CM among T-cells", "Days post infection", "AIDS related euthanasia"))
+  
+  color_df <- data.frame(Marker=c(0,1), color_value=safe_colorblind_palette[1:2])
+  
+  ### Variable with best AUC
+  two_best_variables = results_df$variable_name[1:2]
+  
+  for (Variable_to_plot_full in two_best_variables){
+    Variable_to_plot = sym(Variable_to_plot_full)
+    
+    if(anyNA(data_for_all_model_not_binned[[study_parameter]])) {
+      temp_data = data_for_all_model[!is.na(data_for_all_model[[Variable_to_plot_full]]),]
+    } else {
+      temp_data = data_for_all_model_not_binned[!is.na(data_for_all_model_not_binned[[Variable_to_plot_full]]),]
+    }
+    
+    # temp_data = data_for_all_model_not_binned_for_death_75[!is.na(data_for_all_model_not_binned_for_death_75[[Variable_to_plot_full]]),]
+    label_text = paste0("Threshold = ", round(results_df$Threshold_value[which(results_df$variable_name == Variable_to_plot_full)],1),
+                        "\nThreshold specificity = ",round(results_df$Threshold_specificity[which(results_df$variable_name == Variable_to_plot_full)],2),
+                        "\nThreshold sensitivity = ",round(results_df$Threshold_sensitivity[which(results_df$variable_name == Variable_to_plot_full)],2))
+    
+    plot <- ggplot(temp_data, aes(x=!!Variable_to_plot, color=as.factor(study_parameter_factored))) +
+      geom_histogram(aes(fill = as.factor(study_parameter_factored)), position="identity",
+                     alpha=0.5,bins=30, boundary = results_df$Threshold_value[which(results_df$variable_name == Variable_to_plot_full)]) +
+      geom_vline(xintercept = results_df$Threshold_value[which(results_df$variable_name == Variable_to_plot_full)], linetype = "dotted") + 
+      scale_color_manual(values = color_df$color_value, labels = Cuts_name)+####color for AIDS related Nx
+      scale_fill_manual(values = color_df$color_value, labels = Cuts_name)+
+      xlab(lab_names_df[which(lab_names_df[[1]] == Variable_to_plot_full),2])+
+      labs(color=legend_name, fill=legend_name)+
+      annotate("text",x=mean(range(temp_data[[Variable_to_plot_full]], na.rm=TRUE)), y=Inf, label=label_text, hjust = 0, vjust = 1)+
+      ylab("Count")+
+      theme_Publication()+# + scale_colour_Publication() + scale_fill_Publication()
+      theme(legend.text = element_text(margin = margin(t = 5, b = 5, unit = "pt"))) +
+      theme(legend.key.size = unit(1, 'lines'))+
+      theme(text = element_text(size = 18))
+    
+     ggsave(filename=paste0("figures/",Figure_name,"_",Variable_to_plot_full,".pdf"),
+        plot=plot,
+        device = "pdf",       width=20,       height=15,       units = "cm")
+  }
+}
+
+Figure_3_maker(All_value_bin, All_value_initial, Filter_on_DPI = TRUE, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y","N"),
+               study_parameter = "MTO", Cuts = c(-Inf,13.2,Inf), Cuts_labels = c(0,1), Cuts_name = c("1" ="> 13.2 %", "0" = "< 13.2 %"),
+               legend_name = "MTO",
+               table_name = "Table_S4_Markers of MTO levels",
+               Figure_name = "plot_figure_3a_Markers of MTO level")
+
+Figure_3_maker(All_value_bin, All_value_initial, Filter_on_DPI = TRUE, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y","N"),
+               study_parameter = "DTD", Cuts = c(-Inf,75,Inf), Cuts_labels = c(1,0), Cuts_name = c("1" ="< 75 days", "0" = "> 75 days"),
+               legend_name = "Time to medical cull",
+               table_name = "Table_S5_Markers of nearing medical cull",
+               Figure_name = "plot_figure_3b_Markers of nearing med. cull")
+
+Figure_3_maker(All_value_bin, All_value_initial, Filter_on_DPI = TRUE, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y","N"),
+               study_parameter = "AIDS_related_Nx", Cuts = c("N","Y"), Cuts_labels = c(0,1), Cuts_name = c("1" ="Yes", "0" = "No"),
+               legend_name = "Medical cull",
+               table_name = "Table_S6_Markers of future disease progression",
+               Figure_name = "plot_figure_s4_Markers of future disease progression")
+```
+
+## Making of figure 4
+# Making Figure 4a
+```{r Figure 4a}
+
+Figure_4a_maker <- function(database, Bisphosphonate_database, legend_position = "right") {
+  uninfected <- database %>% filter(DPI < 0, !is.na(MTO), !is.na(Galectin_9))
+  uninfected_short <- subset(uninfected, select = c(MMU_ID, DPI, MTO, Galectin_9,Date))
+  
+  
+  uninfected_untreated <- Bisphosphonate_database %>% filter(is.na(DPI), !is.na(MTO), !is.na(final_concentration),recent_Bisphosphonate == "No" )
+  uninfected_untreated_short <- subset(uninfected_untreated, select = c(Animal_ID, DPI, MTO, final_concentration,Date))
+  
+  colnames(uninfected_untreated_short) <- c("MMU_ID", "DPI", "MTO", "Galectin_9","Date")
+  temp2_data_df = rbind(uninfected_short,uninfected_untreated_short)
+  temp2_data_df <- temp2_data_df[order(temp2_data_df$MMU_ID, temp2_data_df$Date),]
+  
+  
+  safe_colorblind_palette <- palette.colors(palette = "Okabe-Ito")[-5]
+  point_shape_df <- data.frame(MMU_ID=c(unique(temp2_data_df$MMU_ID)), shape_value=c(0:(length(unique(temp2_data_df$MMU_ID))-1)))
+  point_shape_df$shape_value[27] = 45
+  
+  
+  
+  xrange=range(temp2_data_df$Galectin_9)
+  yrange=range(temp2_data_df$MTO)
+  yrange[2]=yrange[2]*1.2
+  
+  temp2_data_df$Age_group="Young"
+  temp2_data_df$Age_group[grep("^3",temp2_data_df$MMU_ID)]="Old"
+  temp2_data_df$Age_group <- factor(temp2_data_df$Age_group, levels = c("Young","Old"))
+  
+  to_filter_with = c("Old","Young")
+  temp2_data_df_to_plot <- temp2_data_df %>% filter(Age_group %in% to_filter_with)
+  
+  color_df <- data.frame(Age_group=unique(temp2_data_df$Age_group)[order(unique(temp2_data_df$Age_group))],
+                         color_value=safe_colorblind_palette[0:length(unique(temp2_data_df$Age_group))])
+  
+  mydata.rcorr = rcorr(temp2_data_df_to_plot$MTO, temp2_data_df_to_plot$Galectin_9, type="spearman")
+  labels = paste0("Spearman r = ",format(mydata.rcorr$r[2,1], digits=3),'\np-value = ', format(mydata.rcorr$P[2,1], digits=3))
+  
+  ggplot(temp2_data_df_to_plot, aes(x=Galectin_9, y=MTO, group_by=MMU_ID)) + 
+    geom_path(alpha = 0.1)+
+    geom_point(aes(shape = as.factor(MMU_ID), color = as.factor(Age_group)),size=3) +
+    labs(color="Age group", shape="Animal ID")+
+    scale_shape_manual(values = as.numeric(point_shape_df$shape_value[point_shape_df$MMU_ID %in% unique(temp2_data_df_to_plot$MMU_ID)]))+###shape for dots
+    scale_color_manual(values = color_df$color_value[color_df$Age_group %in% unique(temp2_data_df_to_plot$Age_group)])+####color for virla strain
+    xlab("Plasma galectin 9 (ng/ml)")+
+    ylab(paste0("MTO (%)"))+
+    theme(text = element_text(size = 18),
+          axis.text = element_text(size = 20))+
+    xlim(xrange)+
+    ylim(yrange)+
+    theme(legend.position=legend_position)+
+    scale_fill_Publication() +theme_Publication()+
+    annotate("text", x = xrange[1], y = yrange[2], label = labels, hjust = 0, vjust = 1, size = 7)
+}
+
+ggsave(filename="figures/plot_figure_4a.pdf",
+       plot=Figure_4a_maker(All_value_bin, Bisphosphonate_data, legend_position = "right"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+```
+
+# Making Figure 4b-c
+```{r Figure 4b-c}
+
+Figure_4b_c_maker <- function(database, Bisphosphonate_database, parameter="MTO", legend_position = "right") {
+  
+  List_full <- c("MMU_ID","Viral_strain", "percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent", "percent_Neu", "Galectin_9",
+                 "DTD", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","MTO", "DPI", "Log10PVL",
+                 "ratio_CD4_div_CD8_Tcells", "CD4_CM_among_T_cells_all_date")
+  lab_names_df <- data.frame(List_full,labs_names = c("Animal ID","Viral strain","% Lymphocytes\n(from CBC)",
+                                                      "% Granulocytes\n(from flow cytometry)", "% Neutrophils\n(from CBC)",
+                                                      "Plasma galectin 9\n(ng/ml)", "Days to euthanasia\n ",
+                                                      "CD14 MFI of n-c monocytes\n(normalized on T cells CD14 MFI)",
+                                                      "MTO (%)", "Days post infection\n ", "Plasma viral load\n(Log10(copies/ml))",
+                                                      "Ratio CD4+/CD8+ T-cells\n ", "% CD4 CM among T-cells\n "))
+  
+  uninfected <- database %>% filter(DPI < 0, !is.na(MTO), !is.na(Galectin_9))
+  uninfected_short <- subset(uninfected, select = c(MMU_ID, DPI, MTO, Galectin_9,Date))
+  
+  
+  uninfected_untreated <- Bisphosphonate_database %>% filter(is.na(DPI), !is.na(MTO), !is.na(final_concentration),recent_Bisphosphonate == "No" )
+  uninfected_untreated_short <- subset(uninfected_untreated, select = c(Animal_ID, DPI, MTO, final_concentration,Date))
+  
+  colnames(uninfected_untreated_short) <- c("MMU_ID", "DPI", "MTO", "Galectin_9","Date")
+  temp2_data_df = rbind(uninfected_short,uninfected_untreated_short)
+  temp2_data_df <- temp2_data_df[order(temp2_data_df$MMU_ID, temp2_data_df$Date),]
+  
+  
+  safe_colorblind_palette <- palette.colors(palette = "Okabe-Ito")[-5]
+  point_shape_df <- data.frame(MMU_ID=c(unique(temp2_data_df$MMU_ID)), shape_value=c(0:(length(unique(temp2_data_df$MMU_ID))-1)))
+  point_shape_df$shape_value[27] = 45
+  
+
+  ###calculation of baseline table
+  MMU_vector = c()
+  Gal_vector = c()
+  MTO_vector = c()
+  Bisph_condition = c()
+  for (mmu_temp in unique(Bisphosphonate_database$Animal_ID[Bisphosphonate_database$recent_Bisphosphonate == "Yes"])) {
+    temp_df = Bisphosphonate_database %>% filter(Animal_ID == mmu_temp)
+    MMU_vector = c(MMU_vector,mmu_temp)
+    Gal_vector = c(Gal_vector,mean(temp_df$final_concentration[temp_df$recent_Bisphosphonate != "Yes"]))
+    MTO_vector = c(MTO_vector,mean(temp_df$MTO[temp_df$recent_Bisphosphonate != "Yes"]))
+    Bisph_condition = c(Bisph_condition,"Before")
+    
+    MMU_vector = c(MMU_vector,mmu_temp)
+    Gal_vector = c(Gal_vector,temp_df$final_concentration[temp_df$recent_Bisphosphonate == "Yes"])
+    MTO_vector = c(MTO_vector,temp_df$MTO[temp_df$recent_Bisphosphonate == "Yes"])
+    Bisph_condition = c(Bisph_condition,"After")
+  }
+  
+  temp2_data_df <- data.frame(MMU_ID=MMU_vector, Galectin_9 = Gal_vector, MTO =MTO_vector, Bisph_condition=Bisph_condition)
+  temp2_data_df$Bisph_condition <- factor(temp2_data_df$Bisph_condition, levels = c("Before", "After"))
+  
+  Wilcox_results <- wilcox.test(temp2_data_df[[parameter]] ~temp2_data_df$Bisph_condition, paired = TRUE, alternative = "two.sided")
+  
+  labels = paste0("p-value = ", format(Wilcox_results$p.value, digits=3))
+  yrange = range(temp2_data_df[[parameter]])
+  
+  ggplot(temp2_data_df,aes(x=Bisph_condition,y=.data[[parameter]]))+
+    geom_boxplot(alpha=0.5, size = 1, outlier.shape = NA)+
+    geom_point(aes(shape=MMU_ID), size = 3)+
+    # ggbeeswarm::geom_quasirandom(aes(shape=MMU_ID), size = 3)+
+    geom_line(aes(group=MMU_ID), alpha = 0.6)+
+    # geom_line(aes(group=MMU_ID), alpha = 0.6, position=ggbeeswarm::position_quasirandom())+
+    
+    scale_shape_manual(values = as.numeric(point_shape_df$shape_value[point_shape_df$MMU_ID %in% unique(temp2_data_df$MMU_ID)]))+###shape for dots
+    labs(shape="Animal ID")+
+    ylab(lab_names_df[which(lab_names_df[[1]] == parameter),2])+
+    xlab("Liposome TX")+
+    ylim(yrange*c(1,1.1))+
+    theme(text = element_text(size = 18),
+          axis.text = element_text(size = 20))+
+    theme(legend.position=legend_position)+
+    scale_fill_Publication() +theme_Publication()+# + scale_colour_Publication()
+    annotate("text", x = 1.5, y = yrange[2]*1.1, label = labels, hjust = 0.5, vjust = 1, size = 7)
+}
+
+ggsave(filename="figures/plot_figure_4b.pdf",
+       plot=Figure_4b_c_maker(All_value_bin, Bisphosphonate_data, parameter="MTO", legend_position = "right"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+
+ggsave(filename="figures/plot_figure_4c.pdf",
+       plot=Figure_4b_c_maker(All_value_bin, Bisphosphonate_data, parameter="Galectin_9", legend_position = "right"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+```
+
+## Making of figure S1
+# Making figure S1a
+```{r Figure S1a}
+
+### DEPENDENT OF Figure 1b function
+List_figure_S1a = c("MTO","DTD","Galectin_9", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","cells_Single_Cells_granulocytes___Freq__of_Parent",
+                    "percent_Neu", "percent_Lymph", "CD4_CM_among_T_cells_all_date" ,
+                    "Log10PVL", "DPI","ratio_CD4_div_CD8_Tcells")
+correlation_database_figure_S1a <- correlation_database_for_correlation_tables(All_value_bin,
+                                                                               DPI_min = 50,
+                                                                               Filter_on_AIDS_related_Nx = c("Y"),
+                                                                               List_figure_S1a)
+
+# Make and save the figure
+pdf(file="figures/plot_figure_S1a.pdf", width=5, height=5)
+corrplot(correlation_database_figure_S1a$r,
+         order="original",
+         type = "lower",
+         tl.col ="black",
+         tl.cex=1,
+         cl.cex = 0.7,
+         cl.offset = 0.2,
+         p.mat = correlation_database_figure_S1a$P,
+         sig.level = 0.05,
+         cl.pos="b",
+         add=FALSE,
+         col = rev(COL2('RdBu', 200)))
+dev.off()
+
+```
+
+# Making figure S2a-c
+```{r Figure S2a-c}
+
+### Read results from table S6 calculation in previous steps
+Table_S6 <- read_excel("tables/Table_S6_Markers of future disease progression.xlsx")
+
+Figure_S2a_c_maker <- function(database, variable_MMU_ID, min_DPI = -100) {
+  
+  variable_to_plot = c("MTO", "Galectin_9")
+  variable_to_plot_names = c("MTO (%)","Plasma galectin 9\n(ng/ml)")
+  
+  
+  Fixed_variable = c("DPI","Date", "MMU_ID", "Viral_strain", "DTD")
+  total_variable =  c(Fixed_variable, variable_to_plot)
+  
+  List_of_AIDS_Nx_animals = unique(database$MMU_ID[which(database$AIDS_related_Nx =="Y")])
+  
+  labels_names = setNames(variable_to_plot_names, variable_to_plot)
+  database_facet <- database  %>% filter(DPI >= min_DPI) %>% subset(select = total_variable)
+  database_facet_measurment <- subset(database_facet, select = variable_to_plot)
+  
+  basal_levels_df = data.frame(DPI = rep(c(1,1), length(variable_to_plot)),
+                               variable =rep(variable_to_plot,2),
+                               measurment = c(apply(database_facet_measurment, 2,min, na.rm=TRUE), apply(database_facet_measurment, 2,max, na.rm=TRUE)))
+  
+  theshold_value_MTO_Gal9 = data.frame(variable=c("MTO","Galectin_9"),
+                                       y=c(Table_S6$Threshold_value[Table_S6$variable_name == "MTO (%)"],
+                                           Table_S6$Threshold_value[Table_S6$variable_name == "Plasma galectin 9\n(ng/ml)"]),
+                                       x = c(50,50), xend = c(Inf,Inf))
+  
+  temp_df =  filter(database_facet, MMU_ID == variable_MMU_ID)
+  temp_df_long = gather(temp_df,key= "variable",value = "measurment" , -all_of(Fixed_variable))
+  
+  ggplot(temp_df_long[!is.na(temp_df_long$measurment),], aes(x=DPI, y=measurment, color = variable)) + 
+    geom_vline(xintercept = unique(temp_df_long$DPI + temp_df_long$DTD), colour = "black", size = 0.5) +###add line at death
+    
+    geom_line(linewidth = 2) +
+    geom_point(size = 2, color="black") + 
+    facet_grid(factor(variable, levels=variable_to_plot) ~ ., scales = "free_y",
+               switch = "y", # flip the facet labels along the y axis from the right side to the left
+               labeller = as_labeller(labels_names))+ # redefine the text that shows up for the facets
+    ylab(NULL)+
+    xlab("Days post infection")+
+    geom_blank(data=basal_levels_df, aes(DPI, measurment)) +
+    scale_fill_Publication() +theme_Publication() + scale_colour_Publication() +
+    theme(strip.background = element_blank(), # remove the background
+          strip.placement = "outside",# put labels to the left of the axis text
+          legend.position = "none",#remove legend
+          text = element_text(size = 20),
+          panel.grid.major = element_line(color="#f0f0f0"))+
+    {
+      if (variable_MMU_ID %in% List_of_AIDS_Nx_animals){
+        ggtitle(paste("Animal ID:", variable_MMU_ID, "†  ", "Viral strain:", unique(temp_df_long$Viral_strain)))
+      } else {
+        ggtitle(paste("Animal ID:", variable_MMU_ID, "  ", "Viral strain:", unique(temp_df_long$Viral_strain)))
+      }
+    }+
+    {
+      if (variable_MMU_ID %in% c("FI38", "GN24","GN17", "EM89")){
+        annotate("rect", xmin = 65, xmax = min(116, unique(temp_df_long$DPI + temp_df_long$DTD)) , ymin = -Inf, ymax=Inf, alpha = .1,fill = "blue")
+        
+      }
+    }+
+    {
+      if (variable_MMU_ID %in% c("FI38", "GN24","GN17", "EM89")){
+        
+        annotate("text", x = mean(c(65,min(116, unique(temp_df_long$DPI + temp_df_long$DTD)))), y=Inf, vjust=2, alpha = 1, color = "blue", label = "ART")
+      }
+    }+
+    
+    geom_segment(data=theshold_value_MTO_Gal9, aes(x=x,y=y,yend=y,xend=xend), color = "black", linetype = "dashed", size =1)
+}
+
+for (variable_MMU_ID in unique(All_value_initial$MMU_ID)) {
+  ggsave(filename=paste0("figures/plot_figure_S2a_c_",variable_MMU_ID,".pdf"),
+         plot=Figure_S2a_c_maker(All_value_initial, variable_MMU_ID=variable_MMU_ID, min_DPI = -100),
+         device = "pdf",       width=20,       height=15,       units = "cm")
+}
+```
+
+
+# Making figure S1b-l
+```{r Figure S1b-l}
+
+Figure_S1b_l_maker <- function(X, Y, database, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y", "N"), legend_position = "none") {
+  
+  ### Filter database
+  if (DPI_min != FALSE) {
+    database_filtered = database %>% filter(DPI >= DPI_min)
+  }
+  database_filtered = database_filtered %>% filter(AIDS_related_Nx %in% Filter_on_AIDS_related_Nx)
+  
+  
+  
+  ###plot design parameter
+  safe_colorblind_palette <- palette.colors(palette = "Okabe-Ito")[-5]
+  
+  List_full <- c("MMU_ID","Viral_strain", "percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent", "percent_Neu", "Galectin_9",
+                 "DTD", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","MTO", "DPI", "Log10PVL",
+                 "ratio_CD4_div_CD8_Tcells", "CD4_CM_among_T_cells_all_date")
+  
+  
+  lab_names_df <- data.frame(List_full,labs_names = c("Animal ID","Viral strain","% Lymphocytes\n(from CBC)",
+                                                      "% Granulocytes\n(from flow cytometry)", "% Neutrophils\n(from CBC)",
+                                                      "Plasma galectin 9\n(ng/ml)", "Days to euthanasia\n ",
+                                                      "CD14 MFI of n-c monocytes\n(normalized on T cells CD14 MFI)",
+                                                      "MTO (%)", "Days post infection\n ", "Plasma viral load\n(Log10(copies/ml))",
+                                                      "Ratio CD4+/CD8+ T-cells\n ", "% CD4 CM among T-cells\n "))
+  
+  point_shape_df <- data.frame(MMU_ID=c(unique(database$MMU_ID)), shape_value=c(0:(length(unique(database$MMU_ID))-1)))
+  color_df <- data.frame(Viral_strain=unique(database$Viral_strain),
+                         color_value=safe_colorblind_palette[0:length(unique(database$Viral_strain))])
+  
+  ### remove na from database for the variable of interest
+  database_no_na <- database_filtered[!(is.na(database_filtered[[X]]) | is.na(database_filtered[[Y]])),]
+  
+  #####calculate correlation
+  mydata.rcorr = rcorr(database_no_na[[Y]], database_no_na[[X]], type="spearman")
+  #results_df_corr = data.frame(Viral_strain=viral_strain_list_2,Spearman_r=r_list_2, Spearman_P = P_list_2)
+  labels = paste0("Spearman r = ",format(mydata.rcorr$r[2,1], digits=3),'\np-value = ', format(mydata.rcorr$P[2,1], digits=3))
+  
+  ggplot(database_no_na, aes(x=.data[[X]], y=.data[[Y]], group = MMU_ID)) + 
+  geom_point(aes(shape=MMU_ID, color=Viral_strain), size = 3) +
+    #geom_path(aes(color=Viral_strain), alpha = 0.1)+
+    geom_path(alpha = 0.1)+
+    scale_shape_manual(values = as.numeric(point_shape_df$shape_value[point_shape_df$MMU_ID %in% unique(database_no_na$MMU_ID)]))+###shape for dots
+    scale_color_manual(values = color_df$color_value[color_df$Viral_strain %in% unique(database_no_na$Viral_strain)])+####color for virla strain
+    labs(color="Viral strain", shape = "Animal ID")+
+    xlab(lab_names_df[which(lab_names_df[[1]] == X),2])+
+    ylim(min(database_no_na[[Y]]), max(database_no_na[[Y]])*1.2)+
+    ylab(lab_names_df[which(lab_names_df[[1]] == Y),2])+
+    
+    {if (Y == "DTD"){
+        scale_y_reverse()
+      }
+    }+
+    {if (Y == "DTD"){
+        annotate("text", x = max(database_no_na[[X]]), y = max(database_no_na[[Y]])*1.2, label = labels, hjust = 1, vjust = 0, size = 7)
+      } else {
+        annotate("text", x = min(database_no_na[[X]]), y = max(database_no_na[[Y]])*1.2, label = labels, hjust = 0, vjust = 1, size = 7)
+      }
+    }+
+    guides(color = guide_legend(order=1),
+           shape = guide_legend(order=2))+
+    scale_fill_Publication() +theme_Publication()+# + scale_colour_Publication()
+    theme(legend.position=legend_position)+
+    theme(text = element_text(size = 18),
+          axis.text = element_text(size = 20))
+
+}
+
+Varaible_to_plot_list = c("percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent", "percent_Neu", "Galectin_9",
+                          "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_", "Log10PVL",
+                          "ratio_CD4_div_CD8_Tcells", "CD4_CM_among_T_cells_all_date" ,"DPI")
+
+for (variable_name in Varaible_to_plot_list) {
+  ggsave(filename=paste0("figures/plot_figure_s1b-j_",variable_name,".pdf"),
+       plot=Figure_S1b_l_maker(variable_name, "MTO", All_value_bin, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y"), legend_position = "none"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+}
+
+Varaible_to_plot_list2 = c("MTO", "Galectin_9")
+
+for (variable_name in Varaible_to_plot_list2) {
+  ggsave(filename=paste0("figures/plot_figure_s1k_l_",variable_name,".pdf"),
+       plot=Figure_S1b_l_maker(variable_name, "DTD", All_value_bin, DPI_min = 50, Filter_on_AIDS_related_Nx = c("Y"), legend_position = "none"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+}
+
+
+```
+
+## Making of figure S3
+# Making Figure s3a
+```{r Figure s3a}
+
+Figure_s3a_maker <- function(database) {
+  MMU_id_list = c()
+  MTO_list = c()
+  Gal9_list = c()
+  DPI_list = c()
+  phase_list = c()
+  Viral_strain_list = c()
+  AIDS_related_Nx_list = c()
+
+  ####select and annotate acute phase values
+  for (temp_mmu in unique(database$MMU_ID)) {
+    temp_database <- database %>% filter(MMU_ID == temp_mmu, DTD > 50)
+    
+    ###Find last uninfected time point
+    temp_database_uninfected = temp_database %>% filter(DPI <= 0)
+    if(nrow(temp_database_uninfected) == 0){
+      last_DPI_uninfected = NA
+      MTO_list = c(MTO_list, NA)
+      Gal9_list = c(Gal9_list, NA)
+    } else {
+      last_DPI_uninfected <- max(temp_database_uninfected$DPI)
+      MTO_list = c(MTO_list, temp_database$MTO[which(temp_database$DPI == last_DPI_uninfected)])
+      Gal9_list = c(Gal9_list, temp_database$Galectin_9[which(temp_database$DPI  == last_DPI_uninfected)])
+    }
+    
+    ###Find first infected time point (acute phase)
+    temp_database_infected = temp_database %>% filter(DPI > 0)
+    if(nrow(temp_database_infected) == 0){
+      first_DPI_infected = NA
+      MTO_list = c(MTO_list, NA)
+      Gal9_list = c(Gal9_list, NA)
+    } else {
+      first_DPI_infected <- min(temp_database_infected$DPI)
+      MTO_list = c(MTO_list, temp_database_infected$MTO[which(temp_database_infected$DPI == first_DPI_infected)])
+      Gal9_list = c(Gal9_list, temp_database_infected$Galectin_9[which(temp_database_infected$DPI  == first_DPI_infected)])
+    }
+    
+    ###Find second infected time point (late acute)
+    temp_database_infected_second = temp_database %>% filter(DPI > first_DPI_infected)
+    if(nrow(temp_database_infected_second) == 0){
+      second_DPI_infected = NA
+      MTO_list = c(MTO_list, NA)
+      Gal9_list = c(Gal9_list, NA)
+    } else {
+      second_DPI_infected <- min(temp_database_infected_second$DPI)
+      MTO_list = c(MTO_list, temp_database$MTO[which(temp_database$DPI == second_DPI_infected)])
+      Gal9_list = c(Gal9_list, temp_database$Galectin_9[which(temp_database$DPI  == second_DPI_infected)])
+    }
+    
+    ordered_DPI = c(last_DPI_uninfected, first_DPI_infected, second_DPI_infected)
+    
+    MMU_id_list = c(MMU_id_list, rep(temp_mmu,3))
+    Viral_strain_list = c(Viral_strain_list, rep(unique(temp_database$Viral_strain),3))
+    AIDS_related_Nx_list = c(AIDS_related_Nx_list, rep(unique(temp_database$AIDS_related_Nx),3))
+    DPI_list = c(DPI_list, ordered_DPI)
+    phase_list = c(phase_list, c("Uninfected","Acute","Late acute"))
+  }
+  
+  results_df_phase = data.frame(MMU_ID = MMU_id_list, MTO = MTO_list, Galectin_9 = Gal9_list,
+                                DPI=DPI_list,Viral_strain=Viral_strain_list,AIDS_related_Nx=AIDS_related_Nx_list,
+                                Phase = factor(phase_list, levels = c("Uninfected","Acute","Late acute")))
+  results_df_phase_no_NA <- results_df_phase[!is.na(results_df_phase$Galectin_9),]
+  
+  
+  
+  
+  
+  
+  
+  
+  #####calculate correlation
+  viral_strain_list_2 = c()
+  r_list_2 = c()
+  P_list_2 = c()
+  for (temp_viral_strain in unique(results_df_phase_no_NA$Viral_strain)) {
+    if(results_df_phase_no_NA %>% filter (Viral_strain == temp_viral_strain) %>% nrow() > 4){
+      temp_database <- results_df_phase_no_NA %>% filter (Viral_strain == temp_viral_strain)
+      mydata.rcorr = rcorr(temp_database$MTO, temp_database$Galectin_9, type="spearman")
+      viral_strain_list_2 = c(viral_strain_list_2, temp_viral_strain)
+      r_list_2 = c(r_list_2, mydata.rcorr$r[2,1])
+      P_list_2 = c(P_list_2, mydata.rcorr$P[2,1])
+    }
+  }
+  results_df_corr = data.frame(Viral_strain=viral_strain_list_2,Spearman_r=r_list_2, Spearman_P = P_list_2)
+  results_df_corr$labels = paste0("Spearman r = ",format(as.list(results_df_corr$Spearman_r), digits=3),
+                                  '\np-value = ', format(as.list(results_df_corr$Spearman_P), digits=3))
+ 
+  #####make doplot
+  point_shape_df <- data.frame(MMU_ID=c(unique(database$MMU_ID)), shape_value=c(0:(length(unique(database$MMU_ID))-1)))
+  List_50DPI_YAIDS <- c("MMU_ID","Viral_strain", "percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent", "percent_Neu", "Galectin_9",
+                        "DTD", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","MTO", "DPI")
+  # List_classic <- c("MMU_ID","Viral_strain", "Log10PVL", "ratio_CD4_div_CD8_Tcells", "CD4_CM_among_T_cells_all_date" ,"MTO", "DPI")
+  lab_names_df_List_50DPI_YAIDS <- data.frame(List_50DPI_YAIDS,labs_names = c("Animal ID","Viral strain","% Lymphocytes in leukocytes\n(from CBC)", "% Granulocytes in leukocytes\n(from flow cytometry)", "% Neutrophils in leukocytes\n(from CBC)", "Plasma galectin 9\n(ng/ml)", "Days to death", "CD14 MFI of non classical monocytes\n(normalized  on CD14 MFI of T cells)", "MTO", "Days post infection"))
+  # lab_names_df_List_classic <- data.frame(List_classic,labs_names = c("Animal ID","Viral strain","Plasma viral load\n(Log10(copies/ml))", "ratio CD4/CD8 T-cells", "% CD4 CM among T-cells", "MTO", "Days post infection"))
+  lab_names_df=lab_names_df_List_50DPI_YAIDS
+  
+  Variable_to_plot_full = "Galectin_9"
+  Variable_to_plot = sym(Variable_to_plot_full)
+  
+  
+  safe_colorblind_palette <- palette.colors(palette = "Okabe-Ito")[-5]
+  
+  #####make doplot
+  phase_list = c("Uninfected","Acute","Late acute", "Chronic phase", "End stage")
+  color_df <- data.frame(Phase=phase_list, color_value=safe_colorblind_palette[0:length(phase_list)])
+  
+  mto_lim=range(database$MTO, na.rm=TRUE)
+  gal_9_lim = range(database$Galectin_9, na.rm=TRUE)
+  
+  ggplot(results_df_phase_no_NA, aes(x=!!Variable_to_plot, y=MTO)) + 
+    geom_point(aes(shape=MMU_ID, color=Phase), size = 3) + 
+    geom_path(aes( group=MMU_ID), alpha = 0.2)+
+    
+    scale_shape_manual(values = as.numeric(point_shape_df$shape_value[point_shape_df$MMU_ID %in% unique(results_df_phase_no_NA$MMU_ID)]))+
+    scale_linetype_manual(values = c(Y="solid", N="twodash"))+
+    scale_color_manual(values = color_df$color_value[color_df$Phase %in% unique(results_df_phase_no_NA$Phase)])+
+    
+    ggtitle(paste("Early phases"))+
+    ylab("MTO (%)")+
+    xlab(lab_names_df[which(lab_names_df[[1]] == Variable_to_plot_full),2])+
+    ylim(mto_lim[1], mto_lim[2]*1.2)+
+    xlim(gal_9_lim)+
+    
+    labs(color="Infection\nstatus", shape = "Animal ID")+
+    guides(color = guide_legend(order=1),
+           shape = guide_legend(order=2))+
+    scale_fill_Publication() +theme_Publication() +# scale_colour_Publication()+
+    
+    # # # # #for per viral strain facet plots
+    facet_wrap(~Viral_strain, scale="fixed")+
+    geom_text(data = results_df_corr, mapping = aes(x = min(results_df_phase_no_NA[[Variable_to_plot_full]]), y = mto_lim[2]*1.2, label = labels),
+              hjust = 0, vjust = 1)+
+    
+    theme(panel.spacing = unit(1.3, "lines"),
+          text = element_text(size = 18))+
+    theme(legend.position='none')### change to 'right' to add a legend
+}
+ggsave(filename="figures/plot_figure_s3a.pdf",
+       plot=Figure_s3a_maker(All_value_bin),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+```
+
+# Making Figure s3b
+```{r Figure s3b}
+
+Figure_s3b_maker <- function(database, DPI_min = 50) {
+  
+  #####calculate correlation
+  viral_strain_list_2 = c()
+  r_list_2 = c()
+  P_list_2 = c()
+  database_late <- database %>% filter (DPI > DPI_min)
+  database_late <- database_late[!is.na(database_late$Galectin_9),]
+  for (temp_viral_strain in unique(database$Viral_strain)) {
+    if(database_late %>% filter (Viral_strain == temp_viral_strain) %>% nrow() > 4){
+      temp_database <- database_late %>% filter (Viral_strain == temp_viral_strain)
+      mydata.rcorr = rcorr(temp_database$MTO, temp_database$Galectin_9, type="spearman")
+      viral_strain_list_2 = c(viral_strain_list_2, temp_viral_strain)
+      r_list_2 = c(r_list_2, mydata.rcorr$r[2,1])
+      P_list_2 = c(P_list_2, mydata.rcorr$P[2,1])
+    }
+  }
+  results_df_corr = data.frame(Viral_strain=viral_strain_list_2,Spearman_r=r_list_2, Spearman_P = P_list_2)
+  results_df_corr$labels = paste0("Spearman r = ",format(as.list(results_df_corr$Spearman_r), digits=3),
+                                  '\np-value = ', format(as.list(results_df_corr$Spearman_P), digits=3))
+
+  
+  #####make doplot
+  point_shape_df <- data.frame(MMU_ID=c(unique(database$MMU_ID)), shape_value=c(0:(length(unique(database$MMU_ID))-1)))
+  List_50DPI_YAIDS <- c("MMU_ID","Viral_strain", "percent_Lymph", "cells_Single_Cells_granulocytes___Freq__of_Parent", "percent_Neu", "Galectin_9",
+                        "DTD", "Ratio_on_T_cell_NonNegclassical_monocytes_MFI_CD14_","MTO", "DPI")
+  lab_names_df_List_50DPI_YAIDS <- data.frame(List_50DPI_YAIDS,labs_names = c("Animal ID","Viral strain","% Lymphocytes in leukocytes\n(from CBC)", "% Granulocytes in leukocytes\n(from flow cytometry)", "% Neutrophils in leukocytes\n(from CBC)", "Plasma galectin 9\n(ng/ml)", "Days to death", "CD14 MFI of non classical monocytes\n(normalized  on CD14 MFI of T cells)", "MTO", "Days post infection"))
+
+  lab_names_df=lab_names_df_List_50DPI_YAIDS
+  
+  Variable_to_plot_full = "Galectin_9"
+  Variable_to_plot = sym(Variable_to_plot_full)
+  
+  
+  safe_colorblind_palette <- palette.colors(palette = "Okabe-Ito")[-5]
+  
+  #####make doplot
+  phase_list = c("Uninfected","Acute","Late acute", "Chronic phase", "End stage")
+  color_df <- data.frame(Phase=phase_list, color_value=safe_colorblind_palette[0:length(phase_list)])
+  
+  mto_lim=range(database$MTO, na.rm=TRUE)
+  gal_9_lim = range(database$Galectin_9, na.rm=TRUE)
+  
+  ggplot(database_late, aes(x=!!Variable_to_plot, y=MTO)) + 
+    geom_point(aes(shape=MMU_ID, color=Phase), size = 3) + 
+    geom_path(aes( group=MMU_ID), alpha = 0.2)+
+    
+    scale_shape_manual(values = as.numeric(point_shape_df$shape_value[point_shape_df$MMU_ID %in% unique(database_late$MMU_ID)]))+
+    scale_linetype_manual(values = c(Y="solid", N="twodash"))+
+    scale_color_manual(values = color_df$color_value[color_df$Phase %in% unique(database_late$Phase)])+
+    
+    ggtitle(paste("Late phases"))+
+    ylab("MTO (%)")+
+    xlab(lab_names_df[which(lab_names_df[[1]] == Variable_to_plot_full),2])+
+    ylim(mto_lim[1], mto_lim[2]*1.2)+
+    xlim(gal_9_lim)+
+    
+    labs(color="Infection\nstatus", shape = "Animal ID")+
+    guides(color = guide_legend(order=1),
+           shape = guide_legend(order=2))+
+    scale_fill_Publication() +theme_Publication() +# scale_colour_Publication()+
+    
+    # # # # #for per viral strain facet plots
+    facet_wrap(~Viral_strain, scale="fixed")+
+    geom_text(data = results_df_corr, mapping = aes(x = min(database_late[[Variable_to_plot_full]]), y = mto_lim[2]*1.2, label = labels),
+              hjust = 0, vjust = 1)+
+    
+    theme(panel.spacing = unit(1.3, "lines"),
+          text = element_text(size = 18))+
+    theme(legend.position='none')### change to 'right' to add a legend
+}
+ggsave(filename="figures/plot_figure_s3b.pdf",
+       plot=Figure_s3b_maker(All_value_bin, DPI_min = 50),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+```
+
+## Making of figure S5
+```{r Figure s5a-f}
+###ggbeeswarm is broken so lines and points do not align anymore. The isseu can be followed here, using past verion of ggbeeswarm package should solve this :
+# https://github.com/eclarke/ggbeeswarm/issues/55
+# https://github.com/eclarke/ggbeeswarm/pull/89
+
+Figure_s5_maker <- function(database, Bisphosphonate_database, parameter ="MTO", category_levels = "Gal_level", age_selection=c("Old","Young"), legend_position = "right") {
+  uninfected <- database %>% filter(DPI < 0, !is.na(MTO), !is.na(Galectin_9))
+  uninfected_short <- subset(uninfected, select = c(MMU_ID, DPI, MTO, Galectin_9,Date))
+  
+  
+  uninfected_untreated <- Bisphosphonate_database %>% filter(is.na(DPI), !is.na(MTO), !is.na(final_concentration),recent_Bisphosphonate == "No" )
+  uninfected_untreated_short <- subset(uninfected_untreated, select = c(Animal_ID, DPI, MTO, final_concentration,Date))
+  
+  colnames(uninfected_untreated_short) <- c("MMU_ID", "DPI", "MTO", "Galectin_9","Date")
+  temp2_data_df = rbind(uninfected_short,uninfected_untreated_short)
+  temp2_data_df <- temp2_data_df[order(temp2_data_df$MMU_ID, temp2_data_df$Date),]
+  
+  
+  safe_colorblind_palette <- palette.colors(palette = "Okabe-Ito")[-5]
+  point_shape_df <- data.frame(MMU_ID=c(unique(temp2_data_df$MMU_ID)), shape_value=c(0:(length(unique(temp2_data_df$MMU_ID))-1)))
+  point_shape_df$shape_value[27] = 45
+
+temp2_data_df$Age_group="Young"
+temp2_data_df$Age_group[grep("^3",temp2_data_df$MMU_ID)]="Old"
+temp2_data_df$Age_group <- factor(temp2_data_df$Age_group, levels = c("Young","Old"))
+
+
+temp2_data_df_to_plot <- temp2_data_df %>% filter(Age_group %in% age_selection)
+color_df <- data.frame(Age_group=unique(temp2_data_df$Age_group)[order(unique(temp2_data_df$Age_group))],
+                       color_value=safe_colorblind_palette[0:length(unique(temp2_data_df$Age_group))])
+
+
+###always same median
+temp2_data_df_to_plot$MTO_level = ifelse(temp2_data_df_to_plot$MTO<=median(temp2_data_df$MTO),"Low","High")
+temp2_data_df_to_plot$Gal_level = ifelse(temp2_data_df_to_plot$Galectin_9<=median(temp2_data_df$Galectin_9),"Low","High")
+temp2_data_df_to_plot$MTO_level <- factor(temp2_data_df_to_plot$MTO_level, levels = c("Low","High"))
+temp2_data_df_to_plot$Gal_level <- factor(temp2_data_df_to_plot$Gal_level, levels = c("Low","High"))
+
+
+Wilcox_results <- wilcox.test(temp2_data_df_to_plot[[parameter]] ~ temp2_data_df_to_plot[[category_levels]], paired = FALSE, alternative = "two.sided")
+
+
+
+
+labels = paste0("p-value = ", format(Wilcox_results$p.value, digits=3))
+yrange = range(temp2_data_df[[parameter]])
+
+if(parameter=="MTO"){
+  y_lab ="\nMTO (%)"
+  x_lab ="Galectin 9 level"
+} else if (parameter=="Galectin_9"){
+  y_lab ="Plasma galectin 9\n(ng/ml)"
+  x_lab ="MTO level"
+}
+
+ggplot(temp2_data_df_to_plot,aes(x=!!sym(category_levels),y=!!sym(parameter)))+
+  geom_boxplot(alpha=0.5, size = 1, outlier.shape = NA)+
+  ggbeeswarm::geom_quasirandom(aes(shape=MMU_ID, color = Age_group), size = 3)+
+  geom_line(aes(group=MMU_ID), alpha = 0.6, position=ggbeeswarm::position_quasirandom())+
+  scale_shape_manual(values = as.numeric(point_shape_df$shape_value[point_shape_df$MMU_ID %in% unique(temp2_data_df_to_plot$MMU_ID)]))+###shape for dots
+  scale_color_manual(values = color_df$color_value[color_df$Age_group %in% unique(temp2_data_df_to_plot$Age_group)])+####color for viral strain
+  labs(color="Age group", shape="Animal ID")+
+  ylab(y_lab)+
+  xlab(x_lab)+
+  ylim(yrange*c(1,1.1))+
+  theme(text = element_text(size = 18),
+        axis.text = element_text(size = 20))+
+  scale_fill_Publication() +theme_Publication()+# + scale_colour_Publication()
+  annotate("text", x = 1.5, y = yrange[2]*1.1, label = labels, hjust = 0.5, vjust = 1, size = 7)+
+  theme(legend.position=legend_position)
+
+}
+ggsave(filename="figures/plot_figure_s5a.pdf",
+       plot=Figure_s5_maker(All_value_bin, Bisphosphonate_data, parameter ="MTO", category_levels = "Gal_level", age_selection=c("Old","Young"), legend_position = "right"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+
+ggsave(filename="figures/plot_figure_s5b.pdf",
+       plot=Figure_s5_maker(All_value_bin, Bisphosphonate_data, parameter ="MTO", category_levels = "Gal_level", age_selection=c("Young"), legend_position = "right"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+
+ggsave(filename="figures/plot_figure_s5c.pdf",
+       plot=Figure_s5_maker(All_value_bin, Bisphosphonate_data, parameter ="MTO", category_levels = "Gal_level", age_selection=c("Old"), legend_position = "right"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+
+ggsave(filename="figures/plot_figure_s5d.pdf",
+       plot=Figure_s5_maker(All_value_bin, Bisphosphonate_data, parameter ="Galectin_9", category_levels = "MTO_level", age_selection=c("Old","Young"), legend_position = "right"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+
+ggsave(filename="figures/plot_figure_s5e.pdf",
+       plot=Figure_s5_maker(All_value_bin, Bisphosphonate_data, parameter ="Galectin_9", category_levels = "MTO_level", age_selection=c("Young"), legend_position = "right"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+
+ggsave(filename="figures/plot_figure_s5f.pdf",
+       plot=Figure_s5_maker(All_value_bin, Bisphosphonate_data, parameter ="Galectin_9", category_levels = "MTO_level", age_selection=c("Old"), legend_position = "right"),
+       device = "pdf",       width=15,       height=15,       units = "cm")
+```
